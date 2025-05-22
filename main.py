@@ -92,7 +92,7 @@ def get_db():
     finally:
         db.close()
 
-app = FastAPI(title="Teams Live-Class Backend with PostgreSQL")
+app = FastAPI(title="Teams Live-Class Backend")
 @app.on_event("startup")
 def on_startup():
     init_db()
