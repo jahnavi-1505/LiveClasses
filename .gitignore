@@ -1,0 +1,114 @@
+# ------------------
+# Python
+# ------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Byte-compiled / optimized / DLL files
+*.pyd
+*.pyo
+
+# ------------------
+# Virtual Environments
+# ------------------
+venv/
+ENV/
+env/
+.venv/
+
+# ------------------
+# Distribution / packaging
+# ------------------
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+.installed.cfg
+
+# ------------------
+# PyInstaller
+# ------------------
+*.spec
+
+# ------------------
+# Unit test / coverage reports
+# ------------------
+htmlcov/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.pytest_cache/
+.tox/
+noxfile.py
+.nox/
+.hypothesis/
+
+# ------------------
+# IDEs and Editors
+# ------------------
+.vscode/
+.idea/
+
+# ------------------
+# Environment Variables
+# ------------------
+.env
+.env.*
+*.env
+
+# ------------------
+# Jupyter Notebooks
+# ------------------
+.ipynb_checkpoints/
+
+# ------------------
+# Logs and runtime files
+# ------------------
+*.log
+*.pid
+*.pid.lock
+logs/
+*.db
+*.sqlite3
+
+# ------------------
+# FastAPI-specific
+# ------------------
+
+# Uvicorn reload
+reload.db
+
+# Static files (if generated)
+staticfiles/
+assets/
+
+# ------------------
+# Docker
+# ------------------
+*.container
+*.log
+*.pid
+docker-compose.override.yml
+
+# ------------------
+# OS-generated files
+# ------------------
+.DS_Store
+Thumbs.db
+ehthumbs.db
+
+# ------------------
+# mypy, pyre, pytype
+# ------------------
+.mypy_cache/
+.pyre/
+.pytype/
+dmypy.json
+.dmypy.json
