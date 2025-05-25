@@ -9,7 +9,7 @@ AUTHORITY    = f"https://login.microsoftonline.com/{TENANT_ID}"
 SCOPES = [
     "https://graph.microsoft.com/User.Read",
     "https://graph.microsoft.com/Calendars.ReadWrite",
-    "https://graph.microsoft.com/OnlineMeeting.ReadWrite"
+    "https://graph.microsoft.com/OnlineMeetings.ReadWrite"
 ]
 
 

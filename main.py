@@ -1,19 +1,21 @@
-from fastapi import FastAPI, HTTPException, Depends, Header
-from pydantic import BaseModel, EmailStr
-from typing import List, Optional
-from datetime import datetime, timedelta
-from uuid import uuid4
 import os
-import aiohttp
+from uuid import uuid4
+from datetime import datetime, timedelta
+from typing import List, Optional
 
+import aiohttp
+from fastapi import FastAPI, HTTPException, Depends
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from pydantic import BaseModel, EmailStr
 from sqlalchemy import Column, String, DateTime, ForeignKey, create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship, Session
-
 from dotenv import load_dotenv
-load_dotenv()
+from fastapi.middleware.cors import CORSMiddleware
 
-# Read database URL from environment
+# Load environment variables\load_dotenv()
+load_dotenv()
+# Database URL from .env
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL environment variable is not set")
@@ -23,18 +25,23 @@ engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-# Models
+# Utility for timestamp defaults
 def now():
     return datetime.utcnow()
 
+# Models
 class ClassSession(Base):
     __tablename__ = "class_sessions"
     id = Column(String, primary_key=True, index=True)
     title = Column(String, nullable=False)
     description = Column(String, nullable=True)
     created_at = Column(DateTime, default=now)
-    participants = relationship("Participant", back_populates="session", cascade="all, delete-orphan")
-    meetings = relationship("Meeting", back_populates="session", cascade="all, delete-orphan")
+    participants = relationship(
+        "Participant", back_populates="session", cascade="all, delete-orphan"
+    )
+    meetings = relationship(
+        "Meeting", back_populates="session", cascade="all, delete-orphan"
+    )
 
 class Participant(Base):
     __tablename__ = "participants"
@@ -52,11 +59,11 @@ class Meeting(Base):
     scheduled_for = Column(DateTime, nullable=False)
     session = relationship("ClassSession", back_populates="meetings")
 
-# Create tables on startup
+# Initialize DB tables
 def init_db():
     Base.metadata.create_all(bind=engine)
 
-# Pydantic Schemas
+# Pydantic schemas
 class SessionCreate(BaseModel):
     title: str
     description: Optional[str] = None
@@ -86,6 +93,9 @@ class SessionOut(BaseModel):
     participants: List[ParticipantOut]
     meetings: List[MeetingOut]
 
+# Security scheme for Swagger
+bearer_scheme = HTTPBearer()
+
 # Dependencies
 def get_db():
     db = SessionLocal()
@@ -94,28 +104,14 @@ def get_db():
     finally:
         db.close()
 
-async def get_user_token(authorization: str = Header(...)) -> str:
-    try:
-        scheme, token = authorization.split()
-    except ValueError:
-        raise HTTPException(status_code=401, detail="Invalid authorization header format")
-    if scheme.lower() != "bearer":
-        raise HTTPException(status_code=401, detail="Authorization scheme must be Bearer")
-    return token
+async def get_user_token(
+    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme)
+) -> str:
+    return credentials.credentials
 
-async def schedule_teams_event(
-    user_token: str,
-    subject: str,
-    start: datetime,
-    end: datetime,
-    attendees: List[str]
-) -> dict:
-    """
-    (Deprecated) Schedules a calendar event with Teams meeting. Mailbox required.
-    """
-    url = "https://graph.microsoft.com/v1.0/me/events"
-    # existing implementation... (not used)
-    raise RuntimeError("Use create_online_meeting instead of schedule_teams_event")
+# Microsoft Graph helper
+def _iso(dt: datetime) -> str:
+    return dt.isoformat()
 
 async def create_online_meeting(
     user_token: str,
@@ -123,19 +119,13 @@ async def create_online_meeting(
     start: datetime,
     end: datetime
 ) -> dict:
-    """
-    Calls Graph /me/onlineMeetings to generate a Teams meeting join link.
-    """
     url = "https://graph.microsoft.com/v1.0/me/onlineMeetings"
     payload = {
-        "startDateTime": {"dateTime": start.isoformat(), "timeZone": "UTC"},
-        "endDateTime":   {"dateTime": end.isoformat(),   "timeZone": "UTC"},
+        "startDateTime": {"dateTime": _iso(start), "timeZone": "UTC"},
+        "endDateTime":   {"dateTime": _iso(end),   "timeZone": "UTC"},
         "subject": subject
     }
-    headers = {
-        "Authorization": f"Bearer {user_token}",
-        "Content-Type": "application/json"
-    }
+    headers = {"Authorization": f"Bearer {user_token}", "Content-Type": "application/json"}
     async with aiohttp.ClientSession() as session:
         async with session.post(url, json=payload, headers=headers) as resp:
             text = await resp.text()
@@ -143,8 +133,18 @@ async def create_online_meeting(
                 raise HTTPException(status_code=resp.status, detail=f"Graph error: {text}")
             return await resp.json()
 
-# FastAPI app
+# FastAPI application
 app = FastAPI(title="Teams Live-Class Backend")
+
+
+# allow swagger /docs to talk to your API
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://127.0.0.1:8000"],  # or ["*"] for everything
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 @app.on_event("startup")
 async def on_startup():
@@ -156,7 +156,11 @@ def create_session(
     db: Session = Depends(get_db)
 ):
     session_id = str(uuid4())
-    db_session = ClassSession(id=session_id, title=payload.title, description=payload.description)
+    db_session = ClassSession(
+        id=session_id,
+        title=payload.title,
+        description=payload.description
+    )
     db.add(db_session)
     db.commit()
     db.refresh(db_session)
@@ -188,7 +192,12 @@ def add_participants(
     created: List[Participant] = []
     for email in payload.emails:
         part_id = str(uuid4())
-        participant = Participant(id=part_id, session_id=session_id, email=email, role=payload.role)
+        participant = Participant(
+            id=part_id,
+            session_id=session_id,
+            email=email,
+            role=payload.role
+        )
         db.add(participant)
         created.append(participant)
     db.commit()
@@ -200,17 +209,24 @@ async def schedule_meeting(
     payload: MeetingCreate,
     db: Session = Depends(get_db),
     user_token: str = Depends(get_user_token)
-):
+) -> MeetingOut:
     sess = db.query(ClassSession).filter(ClassSession.id == session_id).first()
     if not sess:
         raise HTTPException(status_code=404, detail="Session not found")
+
     start = payload.scheduled_for
-    end = start + timedelta(hours=1)
-    emails = [p.email for p in sess.participants]
-    graph_event = await schedule_teams_event(user_token, sess.title, start, end, emails)
-    meet_id = graph_event["id"]
-    join_url = graph_event.get("onlineMeeting", {}).get("joinUrl")
-    meeting = Meeting(id=meet_id, session_id=session_id, join_url=join_url, scheduled_for=start)
+    end   = start + timedelta(hours=1)
+
+    graph_meeting = await create_online_meeting(user_token, sess.title, start, end)
+    meet_id     = graph_meeting.get("id")
+    join_url    = graph_meeting.get("joinWebUrl")
+
+    meeting = Meeting(
+        id=meet_id,
+        session_id=session_id,
+        join_url=join_url,
+        scheduled_for=start
+    )
     db.add(meeting)
     db.commit()
     db.refresh(meeting)
