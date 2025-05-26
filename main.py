@@ -94,7 +94,7 @@ class SessionOut(BaseModel):
     meetings: List[MeetingOut]
 
 # Security scheme for Swagger
-bearer_scheme = HTTPBearer()
+#bearer_scheme = HTTPBearer()
 
 # Dependencies
 def get_db():
@@ -103,11 +103,18 @@ def get_db():
         yield db
     finally:
         db.close()
+# Comment this out or leave unused
+# bearer_scheme = HTTPBearer()
 
-async def get_user_token(
-    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme)
-) -> str:
-    return credentials.credentials
+# Replace token injection with file-based one
+def get_user_token_from_file() -> str:
+    try:
+        with open(".access_token", "r") as f:
+            token = f.read().strip()
+            return token
+    except FileNotFoundError:
+        raise HTTPException(status_code=500, detail="Access token not found. Run token3.py first.")
+
 
 # Microsoft Graph helper
 def _iso(dt: datetime) -> str:
@@ -119,6 +126,8 @@ async def create_online_meeting(
     start: datetime,
     end: datetime
 ) -> dict:
+    print("🔍 Access token used (first 40 chars):", user_token[:40])  # <-- Add this line
+
     url = "https://graph.microsoft.com/v1.0/me/onlineMeetings"
     payload = {
         "startDateTime": {"dateTime": _iso(start), "timeZone": "UTC"},
@@ -126,12 +135,14 @@ async def create_online_meeting(
         "subject": subject
     }
     headers = {"Authorization": f"Bearer {user_token}", "Content-Type": "application/json"}
+    
     async with aiohttp.ClientSession() as session:
         async with session.post(url, json=payload, headers=headers) as resp:
             text = await resp.text()
             if resp.status >= 400:
                 raise HTTPException(status_code=resp.status, detail=f"Graph error: {text}")
             return await resp.json()
+
 
 # FastAPI application
 app = FastAPI(title="Teams Live-Class Backend")
@@ -202,14 +213,22 @@ def add_participants(
         created.append(participant)
     db.commit()
     return created
+def get_user_token_from_file() -> str:
+    try:
+        with open(".access_token", "r") as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        raise HTTPException(status_code=500, detail="Access token not found. Run token3.py first.")
 
 @app.post("/sessions/{session_id}/meetings", response_model=MeetingOut)
 async def schedule_meeting(
     session_id: str,
     payload: MeetingCreate,
     db: Session = Depends(get_db),
-    user_token: str = Depends(get_user_token)
+    user_token: str = get_user_token_from_file()
+  # Force use of local token
 ) -> MeetingOut:
+
     sess = db.query(ClassSession).filter(ClassSession.id == session_id).first()
     if not sess:
         raise HTTPException(status_code=404, detail="Session not found")
