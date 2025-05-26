@@ -112,3 +112,5 @@ ehthumbs.db
 .pytype/
 dmypy.json
 .dmypy.json
+.access_token
+token_cache.bin
