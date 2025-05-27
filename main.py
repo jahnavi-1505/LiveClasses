@@ -108,6 +108,8 @@ def get_db():
 def _iso(dt: datetime) -> str:
     return dt.isoformat()
 
+
+
 async def create_zoom_meeting(
     subject: str,
     start: datetime,
@@ -146,12 +148,14 @@ async def create_zoom_meeting(
 # ─── FastAPI App ───────────────────────────────────────────────────────────────
 app = FastAPI(title="Zoom Live-Class Backend")
 
+from fastapi.middleware.cors import CORSMiddleware
+
 app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://127.0.0.1:8000"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+  CORSMiddleware,
+  allow_origins=["http://localhost:3000"],  # <-- front-end URL
+  allow_credentials=True,
+  allow_methods=["*"],
+  allow_headers=["*"],
 )
 
 @app.on_event("startup")
