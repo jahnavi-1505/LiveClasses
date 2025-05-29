@@ -2,7 +2,6 @@ import os
 from uuid import uuid4
 from datetime import datetime, timedelta
 from typing import List, Optional
-
 import aiohttp
 from fastapi import FastAPI, HTTPException, Depends
 from pydantic import BaseModel, EmailStr
@@ -252,5 +251,98 @@ def delete_session(
     if not sess:
         raise HTTPException(status_code=404, detail="Session not found")
     db.delete(sess)
+    db.commit()
+    return None
+
+# 1️⃣ List all meetings for a session
+@app.get("/sessions/{session_id}/meetings", response_model=List[MeetingOut])
+def list_meetings(
+    session_id: str,
+    db: Session = Depends(get_db)
+):
+    sess = db.query(ClassSession).filter(ClassSession.id == session_id).first()
+    if not sess:
+        raise HTTPException(404, "Session not found")
+    return sess.meetings
+
+# 2️⃣ Get a single meeting’s details
+@app.get("/sessions/{session_id}/meetings/{meeting_id}", response_model=MeetingOut)
+def get_meeting(
+    session_id: str,
+    meeting_id: str,
+    db: Session = Depends(get_db)
+):
+    meet = (
+        db.query(Meeting)
+          .filter(Meeting.session_id == session_id, Meeting.id == meeting_id)
+          .first()
+    )
+    if not meet:
+        raise HTTPException(404, "Meeting not found")
+    return meet
+
+# 3️⃣ Update (reschedule) a meeting
+class MeetingUpdate(BaseModel):
+    scheduled_for: datetime
+
+@app.patch("/sessions/{session_id}/meetings/{meeting_id}", response_model=MeetingOut)
+async def update_meeting(
+    session_id: str,
+    meeting_id: str,
+    payload: MeetingUpdate,
+    db: Session = Depends(get_db)
+):
+    meet = (
+        db.query(Meeting)
+          .filter(Meeting.session_id == session_id, Meeting.id == meeting_id)
+          .first()
+    )
+    if not meet:
+        raise HTTPException(404, "Meeting not found")
+
+    new_start = payload.scheduled_for
+    new_end   = new_start + timedelta(hours=1)
+
+    # 1) Patch Zoom
+    zoom_token = await get_zoom_oauth_token()
+    url = f"https://api.zoom.us/v2/meetings/{meeting_id}"
+    patch_payload = {
+        "start_time": new_start.isoformat(),
+        "duration": int((new_end - new_start).total_seconds() / 60)
+    }
+    headers = {
+        "Authorization": f"Bearer {zoom_token}",
+        "Content-Type": "application/json"
+    }
+    async with aiohttp.ClientSession() as session:
+        async with session.patch(url, json=patch_payload, headers=headers) as resp:
+            text = await resp.text()
+            if resp.status >= 400:
+                raise HTTPException(resp.status, f"Zoom API error: {text}")
+
+    # 2) Update our DB record
+    meet.scheduled_for = new_start
+    db.commit()
+    db.refresh(meet)
+    return meet
+
+# 4️⃣ Remove a participant
+@app.delete("/sessions/{session_id}/participants/{participant_id}", status_code=204)
+def delete_participant(
+    session_id: str,
+    participant_id: str,
+    db: Session = Depends(get_db)
+):
+    part = (
+        db.query(Participant)
+          .filter(
+              Participant.session_id == session_id,
+              Participant.id == participant_id
+          )
+          .first()
+    )
+    if not part:
+        raise HTTPException(404, "Participant not found")
+    db.delete(part)
     db.commit()
     return None

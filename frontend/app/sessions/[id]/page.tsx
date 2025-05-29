@@ -4,22 +4,23 @@ import { useParams } from 'next/navigation';
 import { fetchSession, Session } from '../../../lib/api';
 import { ParticipantManager } from '../../../components/ParticipantManager';
 import { MeetingScheduler } from '../../../components/MeetingScheduler';
+import { MeetingList } from '../../../components/MeetingList';
 
 export default function SessionPage() {
-  const { id: raw } = useParams()
-  const [session, setSession] = useState<Session | null>(null)
+  const { id: raw } = useParams();
+  const [session, setSession] = useState<Session | null>(null);
 
   useEffect(() => {
     async function load() {
-      if (!raw || Array.isArray(raw)) return
-      const sess = await fetchSession(raw)
-      setSession(sess)
+      if (!raw || Array.isArray(raw)) return;
+      const sess = await fetchSession(raw);
+      setSession(sess);
     }
-    load()
-  }, [raw])
+    load();
+  }, [raw]);
 
-  if (!raw || Array.isArray(raw)) return <p>Invalid session ID</p>
-  if (!session) return <p>Loading...</p>
+  if (!raw || Array.isArray(raw)) return <p>Invalid session ID</p>;
+  if (!session) return <p>Loading...</p>;
 
   return (
     <div className="space-y-6">
@@ -33,6 +34,8 @@ export default function SessionPage() {
       />
 
       <MeetingScheduler sessionId={raw} />
+
+      <MeetingList sessionId={raw} />
     </div>
-  )
+  );
 }

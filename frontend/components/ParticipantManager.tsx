@@ -1,6 +1,6 @@
 'use client';
 import { useState } from 'react';
-import { Participant, addParticipants } from '../lib/api';
+import { Participant, addParticipants, deleteParticipant } from '../lib/api';
 
 export function ParticipantManager({
   sessionId,
@@ -9,7 +9,7 @@ export function ParticipantManager({
 }: {
   sessionId: string;
   existing: Participant[];
-  onChange: (p: Participant[]) => void;
+  onChange: (plist: Participant[]) => void;
 }) {
   const [emailList, setEmailList] = useState('');
 
@@ -21,12 +21,20 @@ export function ParticipantManager({
     setEmailList('');
   };
 
+  const handleRemove = async (id: string) => {
+    await deleteParticipant(sessionId, id);
+    onChange(existing.filter(p => p.id !== id));
+  };
+
   return (
     <div className="space-y-2">
       <h4 className="font-semibold">Participants</h4>
       <ul className="pl-4 list-disc space-y-1">
         {existing.map(p => (
-          <li key={p.id}>{p.email} ({p.role})</li>
+          <li key={p.id} className="flex justify-between items-center">
+            <span>{p.email} ({p.role})</span>
+            <button className="text-red-500" onClick={() => handleRemove(p.id)}>Remove</button>
+          </li>
         ))}
       </ul>
       <div className="flex space-x-2">

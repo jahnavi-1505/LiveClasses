@@ -35,9 +35,12 @@ export async function createSession(
   }).then(check);
 }
 
+// lib/api.ts
 export async function deleteSession(id: string): Promise<void> {
-  await fetch(`${API}/sessions/${id}`, { method: 'DELETE' });
+  const res = await fetch(`${API}/sessions/${id}`, { method: 'DELETE' });
+  if (!res.ok) throw new Error(res.statusText);
 }
+
 
 export async function addParticipants(
   sessionId: string,
@@ -60,4 +63,39 @@ export async function scheduleMeeting(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ scheduled_for }),
   }).then(check);
+}
+export async function deleteParticipant(
+  sessionId: string,
+  participantId: string
+): Promise<void> {
+  await fetch(`${API}/sessions/${sessionId}/participants/${participantId}`, {
+    method: 'DELETE'
+  });
+}
+export async function fetchMeetings(
+  sessionId: string
+): Promise<Meeting[]> {
+  return fetch(`${API}/sessions/${sessionId}/meetings`).then(check);
+}
+export async function fetchMeeting(
+  sessionId: string,
+  meetingId: string
+): Promise<Meeting> {
+  return fetch(`${API}/sessions/${sessionId}/meetings/${meetingId}`).then(check);
+}
+export async function updateMeeting(
+  sessionId: string,
+  meetingId: string,
+  scheduled_for: string
+): Promise<Meeting> {
+  const res = await fetch(
+    `${API}/sessions/${sessionId}/meetings/${meetingId}`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scheduled_for })
+    }
+  );
+  if (!res.ok) throw new Error(res.statusText);
+  return res.json();
 }
