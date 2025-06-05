@@ -2,6 +2,7 @@ import os
 from uuid import uuid4
 from datetime import datetime, timedelta
 from typing import List, Optional
+
 import aiohttp
 from fastapi import FastAPI, HTTPException, Depends
 from pydantic import BaseModel, EmailStr
@@ -14,16 +15,36 @@ from fastapi.middleware.cors import CORSMiddleware
 # ─── Import your Zoom token helper ──────────────────────────────────────────────
 from oauth_token import get_zoom_oauth_token
 
+# ─── For sending emails asynchronously ───────────────────────────────────────────
+import aiosmtplib
+from email.message import EmailMessage
+
 # ─── Load Config ───────────────────────────────────────────────────────────────
 load_dotenv()
 
-DATABASE_URL       = os.getenv("DATABASE_URL")
-ZOOM_USER_ID       = os.getenv("ZOOM_USER_ID")       # Zoom user’s email or ID
+print(">> SMTP_HOST:", os.getenv("SMTP_HOST"))
+print(">> SMTP_PORT:", os.getenv("SMTP_PORT"))
+print(">> SMTP_USER:", os.getenv("SMTP_USER"))
+print(">> SMTP_PASS starts with:", os.getenv("SMTP_PASS")[:4], "...")  
+print(">> EMAIL_FROM:", os.getenv("EMAIL_FROM"))
 
+DATABASE_URL = os.getenv("DATABASE_URL")
+ZOOM_USER_ID = os.getenv("ZOOM_USER_ID")  # Zoom user’s email or ID
+
+# SMTP / email settings (for ICS invites)
+SMTP_HOST = os.getenv("SMTP_HOST")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USER = os.getenv("SMTP_USER")
+SMTP_PASS = os.getenv("SMTP_PASS")
+EMAIL_FROM = os.getenv("EMAIL_FROM")
+
+# Basic sanity checks
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL environment variable is not set")
 if not ZOOM_USER_ID:
     raise RuntimeError("Zoom credentials not fully set. Require ZOOM_USER_ID.")
+if not (SMTP_HOST and SMTP_PORT and SMTP_USER and SMTP_PASS and EMAIL_FROM):
+    raise RuntimeError("SMTP_EMAIL settings are not fully set in .env")
 
 # ─── Database Setup ────────────────────────────────────────────────────────────
 engine = create_engine(DATABASE_URL)
@@ -103,11 +124,44 @@ def get_db():
     finally:
         db.close()
 
+# ─── Email Utility with ICS Attachment ──────────────────────────────────────────
+async def send_email_with_ics(
+    to_emails: List[str],
+    subject: str,
+    body: str,
+    ics_content: str,
+    ics_filename: str = "invite.ics"
+) -> None:
+    """
+    Sends an email (async) with a plain-text body and an .ics calendar invite.
+    """
+    message = EmailMessage()
+    message["From"] = EMAIL_FROM
+    message["To"] = ", ".join(to_emails)
+    message["Subject"] = subject
+    message.set_content(body)
+
+    # Attach the ICS file
+    message.add_attachment(
+        ics_content.encode("utf-8"),
+        maintype="text",
+        subtype="calendar",
+        filename=ics_filename,
+        params={"method": "REQUEST", "charset": "UTF-8"}
+    )
+
+    await aiosmtplib.send(
+        message,
+        hostname=SMTP_HOST,
+        port=SMTP_PORT,
+        username=SMTP_USER,
+        password=SMTP_PASS,
+        start_tls=True
+    )
+
 # ─── Zoom Meeting Creation ─────────────────────────────────────────────────────
 def _iso(dt: datetime) -> str:
     return dt.isoformat()
-
-
 
 async def create_zoom_meeting(
     subject: str,
@@ -115,13 +169,10 @@ async def create_zoom_meeting(
     end: datetime
 ) -> dict:
     """
-    Schedules a Zoom meeting via your oauth_token.get_zoom_oauth_token().
+    Schedules a Zoom meeting via oauth_token.get_zoom_oauth_token().
     """
-    # 1. Fetch a fresh Zoom OAuth token
     zoom_token = await get_zoom_oauth_token()
-    print("🔍 Zoom token (first 20 chars):", zoom_token[:20])
 
-    # 2. Build the Zoom Create Meeting request
     url = f"https://api.zoom.us/v2/users/{ZOOM_USER_ID}/meetings"
     payload = {
         "topic": subject,
@@ -135,26 +186,26 @@ async def create_zoom_meeting(
         "Content-Type": "application/json"
     }
 
-    # 3. Execute the POST
     async with aiohttp.ClientSession() as session:
         async with session.post(url, json=payload, headers=headers) as resp:
             text = await resp.text()
             if resp.status >= 400:
-                raise HTTPException(status_code=resp.status,
-                    detail=f"Zoom API error: {text}")
+                raise HTTPException(
+                    status_code=resp.status,
+                    detail=f"Zoom API error: {text}"
+                )
             return await resp.json()
 
 # ─── FastAPI App ───────────────────────────────────────────────────────────────
 app = FastAPI(title="Zoom Live-Class Backend")
 
-from fastapi.middleware.cors import CORSMiddleware
-
+# CORS for your Next.js frontend (http://localhost:3000)
 app.add_middleware(
-  CORSMiddleware,
-  allow_origins=["http://localhost:3000"],  # <-- front-end URL
-  allow_credentials=True,
-  allow_methods=["*"],
-  allow_headers=["*"],
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 @app.on_event("startup")
@@ -192,14 +243,19 @@ def get_session(
     return sess
 
 @app.post("/sessions/{session_id}/participants", response_model=List[ParticipantOut])
-def add_participants(
+async def add_participants(
     session_id: str,
     payload: ParticipantCreate,
     db: Session = Depends(get_db)
 ):
+    """
+    Add participants to a session, store them in DB,
+    and email each new participant a placeholder .ics invite.
+    """
     sess = db.query(ClassSession).filter(ClassSession.id == session_id).first()
     if not sess:
         raise HTTPException(status_code=404, detail="Session not found")
+
     created: List[Participant] = []
     for email in payload.emails:
         part_id = str(uuid4())
@@ -211,7 +267,42 @@ def add_participants(
         )
         db.add(participant)
         created.append(participant)
+
     db.commit()
+
+    # Build a “placeholder” ICS since no meeting is scheduled yet
+    now_dt = datetime.utcnow()
+    uid = f"{session_id}@live-classes"
+    ics_placeholder = (
+        "BEGIN:VCALENDAR\n"
+        "VERSION:2.0\n"
+        "PRODID:-//Live Classes//EN\n"
+        "METHOD:REQUEST\n"
+        "BEGIN:VEVENT\n"
+        f"UID:{uid}\n"
+        f"DTSTAMP:{now_dt.strftime('%Y%m%dT%H%M%SZ')}\n"
+        f"DTSTART:{now_dt.strftime('%Y%m%dT%H%M%SZ')}\n"
+        f"DTEND:{(now_dt + timedelta(hours=1)).strftime('%Y%m%dT%H%M%SZ')}\n"
+        f"SUMMARY:{sess.title} (not yet scheduled)\n"
+        "END:VEVENT\n"
+        "END:VCALENDAR"
+    )
+
+    to_addresses = [p.email for p in created]
+    subject = f"Invited to session: {sess.title}"
+    body = (
+        f"Hello,\n\n"
+        f"You’ve been added as a {payload.role} to “{sess.title}”.\n"
+        f"Description: {sess.description or 'No description'}\n\n"
+        f"A calendar invite is attached. When a meeting is scheduled, you’ll receive an updated invite with the Zoom link.\n\n"
+        f"Best regards,\nLive Classes Team"
+    )
+
+    try:
+        await send_email_with_ics(to_addresses, subject, body, ics_placeholder, "session_invite.ics")
+    except Exception as e:
+        print(f"⚠️ Failed to send participant invite ICS: {e}")
+
     return created
 
 @app.post("/sessions/{session_id}/meetings", response_model=MeetingOut)
@@ -220,6 +311,9 @@ async def schedule_meeting(
     payload: MeetingCreate,
     db: Session = Depends(get_db)
 ) -> MeetingOut:
+    """
+    Schedule a Zoom meeting, store in DB, then email all participants a real ICS with Zoom link.
+    """
     sess = db.query(ClassSession).filter(ClassSession.id == session_id).first()
     if not sess:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -229,7 +323,7 @@ async def schedule_meeting(
 
     zoom_meeting = await create_zoom_meeting(sess.title, start, end)
     meet_id   = str(zoom_meeting["id"])
-    join_url  = zoom_meeting["join_url"]
+    join_url  = zoom_meeting.get("join_web_url", zoom_meeting.get("join_url", ""))
 
     meeting = Meeting(
         id=meet_id,
@@ -240,6 +334,46 @@ async def schedule_meeting(
     db.add(meeting)
     db.commit()
     db.refresh(meeting)
+
+    # Build a proper ICS for the scheduled Zoom meeting
+    dtstamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    dtstart = start.strftime("%Y%m%dT%H%M%SZ")
+    dtend   = end.strftime("%Y%m%dT%H%M%SZ")
+    uid = f"{meet_id}@live-classes"
+
+    ics_event = (
+        "BEGIN:VCALENDAR\n"
+        "VERSION:2.0\n"
+        "PRODID:-//Live Classes//EN\n"
+        "METHOD:REQUEST\n"
+        "BEGIN:VEVENT\n"
+        f"UID:{uid}\n"
+        f"DTSTAMP:{dtstamp}\n"
+        f"DTSTART:{dtstart}\n"
+        f"DTEND:{dtend}\n"
+        f"SUMMARY:{sess.title}\n"
+        f"DESCRIPTION:Join Zoom Meeting: {join_url}\\n\\n{sess.description or ''}\n"
+        f"LOCATION:{join_url}\n"
+        "END:VEVENT\n"
+        "END:VCALENDAR"
+    )
+
+    if sess.participants:
+        to_addresses = [p.email for p in sess.participants]
+        subject = f"Zoom meeting scheduled for session: {sess.title}"
+        body = (
+            f"Hello,\n\n"
+            f"The Zoom meeting for session “{sess.title}” has been scheduled.\n"
+            f"Join URL: {join_url}\n"
+            f"Scheduled For: {start.isoformat()}\n\n"
+            f"Please find the calendar invite attached.\n\n"
+            f"Best regards,\nLive Classes Team"
+        )
+        try:
+            await send_email_with_ics(to_addresses, subject, body, ics_event, "meeting_invite.ics")
+        except Exception as e:
+            print(f"⚠️ Failed to send meeting invite ICS: {e}")
+
     return meeting
 
 @app.delete("/sessions/{session_id}", status_code=204)
