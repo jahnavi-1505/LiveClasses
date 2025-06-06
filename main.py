@@ -480,3 +480,75 @@ def delete_participant(
     db.delete(part)
     db.commit()
     return None
+
+
+@app.post("/sessions/{session_id}/send-invites")
+async def send_invites(
+    session_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Look up the session by ID, find its most recent meeting (Zoom),
+    build an ICS with the Zoom link, and send an invite to every participant.
+    """
+    # 1. Fetch the session
+    sess = db.query(ClassSession).filter(ClassSession.id == session_id).first()
+    if not sess:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    # 2. Fetch the latest meeting (assumes only one or you want the last one)
+    if not sess.meetings:
+        raise HTTPException(status_code=400, detail="No meeting scheduled yet for this session")
+    # Here we pick the most recent by scheduled_for – you can also just take sess.meetings[-1]
+    latest_meeting = sorted(sess.meetings, key=lambda m: m.scheduled_for)[-1]
+
+    # 3. Build the .ics content using that meeting’s join_url and scheduled_for
+    start = latest_meeting.scheduled_for
+    end = start + timedelta(hours=1)
+
+    dtstamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    dtstart = start.strftime("%Y%m%dT%H%M%SZ")
+    dtend = end.strftime("%Y%m%dT%H%M%SZ")
+    uid = f"{latest_meeting.id}@live-classes"
+
+    ics_event = (
+        "BEGIN:VCALENDAR\n"
+        "VERSION:2.0\n"
+        "PRODID:-//Live Classes//EN\n"
+        "METHOD:REQUEST\n"
+        "BEGIN:VEVENT\n"
+        f"UID:{uid}\n"
+        f"DTSTAMP:{dtstamp}\n"
+        f"DTSTART:{dtstart}\n"
+        f"DTEND:{dtend}\n"
+        f"SUMMARY:{sess.title}\n"
+        f"DESCRIPTION:Join Zoom Meeting: {latest_meeting.join_url}\\n\\n{sess.description or ''}\n"
+        f"LOCATION:{latest_meeting.join_url}\n"
+        "END:VEVENT\n"
+        "END:VCALENDAR"
+    )
+
+    # 4. Collect all participant emails
+    emails = [p.email for p in sess.participants]
+    if not emails:
+        raise HTTPException(status_code=400, detail="No participants to invite")
+
+    subject = f"Invitation: {sess.title} (Zoom Meeting)"
+    body = (
+        f"Hello,\n\n"
+        f"You’re invited to the upcoming Zoom meeting for session “{sess.title}”.\n"
+        f"Join URL: {latest_meeting.join_url}\n"
+        f"Scheduled For: {start.isoformat()} UTC\n\n"
+        f"Please find the attached calendar invite (.ics) and add it to your calendar.\n\n"
+        f"Best regards,\nLive Classes Team"
+    )
+
+    # 5. Call your existing send_email_with_ics helper
+    try:
+        await send_email_with_ics(emails, subject, body, ics_event, "meeting_invite.ics")
+    except Exception as e:
+        # If the SMTP call failed, return a 500 with details
+        raise HTTPException(status_code=500, detail=f"Failed to send invites: {e}")
+
+    return {"detail": f"Invites sent to {len(emails)} participants"}
+
