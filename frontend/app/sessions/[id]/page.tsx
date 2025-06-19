@@ -6,6 +6,7 @@ import { fetchSession, Session } from '../../../lib/api';
 import { ParticipantManager } from '../../../components/ParticipantManager';
 import { MeetingScheduler } from '../../../components/MeetingScheduler';
 import { MeetingList } from '../../../components/MeetingList';
+import { RecordingList } from '../../../components/RecordingList';
 
 export default function SessionPage() {
   const { id: raw } = useParams();
@@ -72,6 +73,7 @@ export default function SessionPage() {
 
       <MeetingScheduler sessionId={raw} />
       <MeetingList sessionId={raw} />
+      <RecordingList sessionId={raw} />
     </div>
   );
 }

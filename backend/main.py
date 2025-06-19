@@ -2,7 +2,6 @@ import os
 from uuid import uuid4
 from datetime import datetime, timedelta
 from typing import List, Optional
-
 import aiohttp
 from fastapi import FastAPI, HTTPException, Depends
 from pydantic import BaseModel, EmailStr
@@ -32,7 +31,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 ZOOM_USER_ID = os.getenv("ZOOM_USER_ID")  # Zoom user’s email or ID
 ZOOM_ACCOUNT_ID    = os.getenv("ZOOM_ACCOUNT_ID") 
 
-# SMTP / email settings (for ICS invites)
+# SMTP settings (for ICS invites)
 SMTP_HOST = os.getenv("SMTP_HOST")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USER = os.getenv("SMTP_USER")
@@ -180,7 +179,10 @@ async def create_zoom_meeting(
         "type": 2,  # scheduled meeting
         "start_time": start.isoformat(),
         "duration": int((end - start).total_seconds() / 60),
-        "timezone": "UTC"
+        "timezone": "UTC",
+        "settings": {
+            "auto_recording": "cloud"   # <-- enable automatic cloud recording
+        }
     }
     headers = {
         "Authorization": f"Bearer {zoom_token}",
@@ -552,4 +554,37 @@ async def send_invites(
         raise HTTPException(status_code=500, detail=f"Failed to send invites: {e}")
 
     return {"detail": f"Invites sent to {len(emails)} participants"}
+
+@app.get("/sessions/{session_id}/recordings")
+async def list_recordings(
+    session_id: str,
+    db: Session = Depends(get_db)
+):
+    sess = db.query(ClassSession).filter(ClassSession.id == session_id).first()
+    if not sess:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    zoom_token = await get_zoom_oauth_token()
+    headers = {"Authorization": f"Bearer {zoom_token}"}
+    recordings = []
+
+    async with aiohttp.ClientSession(headers=headers) as client:
+        for meet in sess.meetings:
+            url = f"https://api.zoom.us/v2/meetings/{meet.id}/recordings"
+            async with client.get(url) as resp:
+                if resp.status != 200:
+                    continue
+                data = await resp.json()
+                for file in data.get("recording_files", []):
+                    # append Zoom download token to URL
+                    download_url = f"{file['download_url']}?access_token={zoom_token}"
+                    recordings.append({
+                        "meeting_id": meet.id,
+                        "id": file.get("id"),
+                        "file_type": file.get("file_type"),
+                        "download_url": download_url,
+                        "recording_start": file.get("recording_start"),
+                        "recording_end": file.get("recording_end"),
+                    })
+    return {"recordings": recordings}
 

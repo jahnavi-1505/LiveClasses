@@ -99,3 +99,20 @@ export async function updateMeeting(
   if (!res.ok) throw new Error(res.statusText);
   return res.json();
 }
+export interface Recording {
+  meeting_id: string;
+  id: string;
+  file_type: string;
+  download_url: string;
+  recording_start: string;
+  recording_end: string;
+}
+
+export async function fetchRecordings(sessionId: string): Promise<Recording[]> {
+  const res = await fetch(
+    `${process.env.NEXT_PUBLIC_API_URL}/sessions/${sessionId}/recordings`
+  );
+  if (!res.ok) throw new Error(`Error ${res.status}: ${await res.text()}`);
+  const json = await res.json();
+  return json.recordings;
+}
