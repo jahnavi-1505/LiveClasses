@@ -17,12 +17,8 @@ export default function SessionPage() {
   useEffect(() => {
     async function load() {
       if (!raw || Array.isArray(raw)) return;
-      try {
-        const sess = await fetchSession(raw);
-        setSession(sess);
-      } catch (e: any) {
-        console.error('Failed to fetch session:', e);
-      }
+      const sess = await fetchSession(raw);
+      setSession(sess);
     }
     load();
   }, [raw]);
@@ -34,21 +30,16 @@ export default function SessionPage() {
     setLoadingInvites(true);
     setInviteStatus(null);
     setInviteError(null);
-
     try {
       const res = await fetch(
         `${process.env.NEXT_PUBLIC_API_URL}/sessions/${session.id}/send-invites`,
         { method: 'POST' }
       );
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(`Server returned ${res.status}: ${text}`);
-      }
+      if (!res.ok) throw new Error(await res.text());
       const json = await res.json();
-      setInviteStatus(json.detail || 'Invites sent successfully!');
-    } catch (err: any) {
-      console.error('Error sending invites:', err);
-      setInviteError(err.message || 'Unknown error');
+      setInviteStatus(json.detail);
+    } catch (e: any) {
+      setInviteError(e.message);
     } finally {
       setLoadingInvites(false);
     }
@@ -56,38 +47,30 @@ export default function SessionPage() {
 
   return (
     <div className="space-y-6">
-      <h2 className="text-2xl">{session.title}</h2>
-      <p>{session.description}</p>
+      <div className="card">
+        <h2 className="text-2xl font-semibold text-primary">{session.title}</h2>
+        <p className="mt-2 text-gray-600">{session.description}</p>
+      </div>
 
       <ParticipantManager
         sessionId={raw}
         existing={session.participants}
-        onChange={(plist) =>
-          setSession((prev) =>
-            prev ? { ...prev, participants: plist } : prev
-          )
-        }
+        onChange={plist => setSession({ ...session, participants: plist })}
       />
 
       <button
-        className={`mt-4 px-4 py-2 rounded text-white ${
-          loadingInvites ? 'bg-gray-400 cursor-not-allowed' : 'bg-purple-500 hover:bg-purple-600'
+        className={`mt-4 px-4 py-2 rounded text-white transition-colors ${
+          loadingInvites ? 'bg-gray-400 cursor-not-allowed' : 'bg-secondary hover:bg-primary'
         }`}
         onClick={handleSendInvites}
         disabled={loadingInvites}
       >
         {loadingInvites ? 'Sending Invites…' : 'Send Invite Email'}
       </button>
-
-      {inviteStatus && (
-        <p className="mt-2 text-green-600">{inviteStatus}</p>
-      )}
-      {inviteError && (
-        <p className="mt-2 text-red-600">Error: {inviteError}</p>
-      )}
+      {inviteStatus && <p className="text-green-600 mt-2">{inviteStatus}</p>}
+      {inviteError && <p className="text-red-600 mt-2">Error: {inviteError}</p>}
 
       <MeetingScheduler sessionId={raw} />
-
       <MeetingList sessionId={raw} />
     </div>
   );

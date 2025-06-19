@@ -30,6 +30,7 @@ print(">> EMAIL_FROM:", os.getenv("EMAIL_FROM"))
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 ZOOM_USER_ID = os.getenv("ZOOM_USER_ID")  # Zoom user’s email or ID
+ZOOM_ACCOUNT_ID    = os.getenv("ZOOM_ACCOUNT_ID") 
 
 # SMTP / email settings (for ICS invites)
 SMTP_HOST = os.getenv("SMTP_HOST")
@@ -543,11 +544,11 @@ async def send_invites(
         f"Best regards,\nLive Classes Team"
     )
 
-    # 5. Call your existing send_email_with_ics helper
+
     try:
         await send_email_with_ics(emails, subject, body, ics_event, "meeting_invite.ics")
     except Exception as e:
-        # If the SMTP call failed, return a 500 with details
+
         raise HTTPException(status_code=500, detail=f"Failed to send invites: {e}")
 
     return {"detail": f"Invites sent to {len(emails)} participants"}
