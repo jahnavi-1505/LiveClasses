@@ -11,38 +11,26 @@ import { RecordingList } from '../../../components/RecordingList';
 export default function SessionPage() {
   const { id: raw } = useParams();
   const [session, setSession] = useState<Session | null>(null);
-  const [loadingInvites, setLoadingInvites] = useState(false);
-  const [inviteStatus, setInviteStatus] = useState<string | null>(null);
-  const [inviteError, setInviteError] = useState<string | null>(null);
 
   useEffect(() => {
-    async function load() {
-      if (!raw || Array.isArray(raw)) return;
-      const sess = await fetchSession(raw);
-      setSession(sess);
-    }
-    load();
+    if (!raw || Array.isArray(raw)) return;
+    fetchSession(raw).then(setSession).catch(console.error);
   }, [raw]);
 
   if (!raw || Array.isArray(raw)) return <p>Invalid session ID</p>;
-  if (!session) return <p>Loading...</p>;
+  if (!session) return <p>Loading…</p>;
 
-  const handleSendInvites = async () => {
-    setLoadingInvites(true);
-    setInviteStatus(null);
-    setInviteError(null);
+  const handleArchive = async () => {
     try {
       const res = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL}/sessions/${session.id}/send-invites`,
+        `${process.env.NEXT_PUBLIC_API_URL}/sessions/${session.id}/store-recordings`,
         { method: 'POST' }
       );
       if (!res.ok) throw new Error(await res.text());
-      const json = await res.json();
-      setInviteStatus(json.detail);
-    } catch (e: any) {
-      setInviteError(e.message);
-    } finally {
-      setLoadingInvites(false);
+      const { stored } = await res.json();
+      alert(`Uploaded ${stored.length} recordings to Azure`);
+    } catch (err: any) {
+      alert(`Archive failed: ${err.message}`);
     }
   };
 
@@ -59,21 +47,19 @@ export default function SessionPage() {
         onChange={plist => setSession({ ...session, participants: plist })}
       />
 
-      <button
-        className={`mt-4 px-4 py-2 rounded text-white transition-colors ${
-          loadingInvites ? 'bg-gray-400 cursor-not-allowed' : 'bg-secondary hover:bg-primary'
-        }`}
-        onClick={handleSendInvites}
-        disabled={loadingInvites}
-      >
-        {loadingInvites ? 'Sending Invites…' : 'Send Invite Email'}
-      </button>
-      {inviteStatus && <p className="text-green-600 mt-2">{inviteStatus}</p>}
-      {inviteError && <p className="text-red-600 mt-2">Error: {inviteError}</p>}
-
       <MeetingScheduler sessionId={raw} />
       <MeetingList sessionId={raw} />
       <RecordingList sessionId={raw} />
+
+      {/* archive button inside its own card for contrast */}
+      <div className="w-full bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 transition">
+        <button
+          onClick={handleArchive}
+          className="w-full bg-secondary text-white px-4 py-2 rounded hover:bg-primary transition-colors"
+        >
+          Archive Recordings to Azure
+        </button>
+      </div>
     </div>
   );
 }

@@ -10,9 +10,9 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship, Session
 from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
-
-# ─── Import your Zoom token helper ──────────────────────────────────────────────
+from azure.storage.blob.aio import BlobServiceClient
 from oauth_token import get_zoom_oauth_token
+from urllib.parse import quote_plus
 
 # ─── For sending emails asynchronously ───────────────────────────────────────────
 import aiosmtplib
@@ -37,6 +37,16 @@ SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USER = os.getenv("SMTP_USER")
 SMTP_PASS = os.getenv("SMTP_PASS")
 EMAIL_FROM = os.getenv("EMAIL_FROM")
+
+AZURE_CONN_STR = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+AZURE_CONTAINER = os.getenv("AZURE_STORAGE_CONTAINER")
+
+if not AZURE_CONN_STR or not AZURE_CONTAINER:
+    raise RuntimeError("Missing AZURE_STORAGE_CONNECTION_STRING or AZURE_STORAGE_CONTAINER in .env")
+
+# create one BlobServiceClient per process
+blob_service = BlobServiceClient.from_connection_string(AZURE_CONN_STR)
+container_client = blob_service.get_container_client(AZURE_CONTAINER)
 
 # Basic sanity checks
 if not DATABASE_URL:
@@ -78,6 +88,7 @@ class Participant(Base):
 class Meeting(Base):
     __tablename__ = "meetings"
     id            = Column(String, primary_key=True, index=True)
+    uuid          = Column(String, nullable=False)
     session_id    = Column(String, ForeignKey("class_sessions.id"))
     join_url      = Column(String, nullable=False)
     scheduled_for = Column(DateTime, nullable=False)
@@ -311,6 +322,7 @@ async def add_participants(
 @app.post("/sessions/{session_id}/meetings", response_model=MeetingOut)
 async def schedule_meeting(
     session_id: str,
+    
     payload: MeetingCreate,
     db: Session = Depends(get_db)
 ) -> MeetingOut:
@@ -326,11 +338,14 @@ async def schedule_meeting(
 
     zoom_meeting = await create_zoom_meeting(sess.title, start, end)
     meet_id   = str(zoom_meeting["id"])
+    meet_num = str(zoom_meeting["id"])
+    meet_uuid = zoom_meeting["uuid"]
     join_url  = zoom_meeting.get("join_web_url", zoom_meeting.get("join_url", ""))
 
     meeting = Meeting(
-        id=meet_id,
         session_id=session_id,
+        id=meet_num,
+        uuid=meet_uuid,
         join_url=join_url,
         scheduled_for=start
     )
@@ -588,3 +603,62 @@ async def list_recordings(
                     })
     return {"recordings": recordings}
 
+@app.post("/sessions/{session_id}/store-recordings")
+async def store_recordings_to_azure(
+    session_id: str,
+    db: Session = Depends(get_db)
+):
+    # 1️⃣ Fetch our session and ensure it exists
+    sess = db.query(ClassSession).filter(ClassSession.id == session_id).first()
+    if not sess:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    # 2️⃣ Get a fresh Zoom OAuth token
+    zoom_token = await get_zoom_oauth_token()
+    headers = {"Authorization": f"Bearer {zoom_token}"}
+
+    stored = []
+
+    # 3️⃣ Open a single aiohttp session with our headers
+    async with aiohttp.ClientSession(headers=headers) as client:
+        # 4️⃣ Loop through *all* meetings in this session
+        for meet in sess.meetings:
+            # ⚠️ Use the Zoom *UUID*, URL-encoded, instead of the numeric ID
+            zoom_uuid = quote_plus(meet.uuid)
+
+            list_url = f"https://api.zoom.us/v2/meetings/{zoom_uuid}/recordings"
+            async with client.get(list_url) as resp:
+                if resp.status != 200:
+                    # either no recording or a call error — skip
+                    continue
+                data = await resp.json()
+
+            # 5️⃣ For each recording file returned
+            for file in data.get("recording_files", []):
+                # build the download URL with token
+                download_url = f"{file['download_url']}?access_token={zoom_token}"
+
+                async with client.get(download_url) as dl:
+                    if dl.status != 200:
+                        continue
+                    content = await dl.read()
+
+                # 6️⃣ Construct a sensible blob name
+                ext = file["file_type"].lower()         # e.g. "mp4" or "m4a"
+                blob_name = f"{session_id}/{meet.uuid}/{file['id']}.{ext}"
+
+                # 7️⃣ Upload to Azure Blob Storage
+                blob_client = container_client.get_blob_client(blob_name)
+                await blob_client.upload_blob(content, overwrite=True)
+
+                stored.append({
+                    "meeting_uuid": meet.uuid,
+                    "file_id": file["id"],
+                    "blob_path": blob_name
+                })
+
+    # 8️⃣ If nothing landed, it means we found no recordings
+    if not stored:
+        raise HTTPException(status_code=404, detail="No recordings found or uploaded")
+
+    return {"stored": stored}
