@@ -1,8 +1,10 @@
 import os
+import traceback
 from uuid import uuid4
 from datetime import datetime, timedelta
 from typing import List, Optional
 import aiohttp
+import aiofiles
 from fastapi import FastAPI, HTTPException, Depends
 from pydantic import BaseModel, EmailStr
 from sqlalchemy import Column, String, DateTime, ForeignKey, create_engine
@@ -603,62 +605,210 @@ async def list_recordings(
                     })
     return {"recordings": recordings}
 
+@app.get("/sessions/{session_id}/recordings")
+async def list_recordings(
+    session_id: str,
+    db: Session = Depends(get_db)
+):
+    sess = db.query(ClassSession).filter(ClassSession.id == session_id).first()
+    if not sess:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    zoom_token = await get_zoom_oauth_token()
+    headers = {"Authorization": f"Bearer {zoom_token}"}
+    recordings = []
+
+    async with aiohttp.ClientSession(headers=headers) as client:
+        for meet in sess.meetings:
+            url = f"https://api.zoom.us/v2/meetings/{meet.id}/recordings"
+            async with client.get(url) as resp:
+                if resp.status != 200:
+                    continue
+                data = await resp.json()
+                for file in data.get("recording_files", []):
+                    recordings.append({
+                        "meeting_id": meet.id,
+                        "id": file.get("id"),
+                        "file_type": file.get("file_type"),
+                        "download_url": file["download_url"],
+                        "recording_start": file.get("recording_start"),
+                        "recording_end": file.get("recording_end"),
+                    })
+    return {"recordings": recordings}
+
+
 @app.post("/sessions/{session_id}/store-recordings")
 async def store_recordings_to_azure(
     session_id: str,
     db: Session = Depends(get_db)
 ):
-    # 1️⃣ Fetch our session and ensure it exists
     sess = db.query(ClassSession).filter(ClassSession.id == session_id).first()
     if not sess:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    # 2️⃣ Get a fresh Zoom OAuth token
     zoom_token = await get_zoom_oauth_token()
     headers = {"Authorization": f"Bearer {zoom_token}"}
-
     stored = []
 
-    # 3️⃣ Open a single aiohttp session with our headers
     async with aiohttp.ClientSession(headers=headers) as client:
-        # 4️⃣ Loop through *all* meetings in this session
         for meet in sess.meetings:
-            # ⚠️ Use the Zoom *UUID*, URL-encoded, instead of the numeric ID
-            zoom_uuid = quote_plus(meet.uuid)
-
-            list_url = f"https://api.zoom.us/v2/meetings/{zoom_uuid}/recordings"
+            list_url = f"https://api.zoom.us/v2/meetings/{meet.id}/recordings"
+            
+            print(f"Fetching recordings for meeting {meet.id}: {list_url}")
+            
             async with client.get(list_url) as resp:
                 if resp.status != 200:
-                    # either no recording or a call error — skip
+                    error_text = await resp.text()
+                    print(f"Failed to list recordings for meeting {meet.id}: {resp.status} - {error_text}")
                     continue
                 data = await resp.json()
 
-            # 5️⃣ For each recording file returned
-            for file in data.get("recording_files", []):
-                # build the download URL with token
-                download_url = f"{file['download_url']}?access_token={zoom_token}"
+            recording_files = data.get("recording_files", [])
+            print(f"Found {len(recording_files)} recording files for meeting {meet.id}")
 
-                async with client.get(download_url) as dl:
-                    if dl.status != 200:
-                        continue
-                    content = await dl.read()
+            for file in recording_files:
+                try:
+                    # Method 1: Try direct download with Bearer token
+                    download_url = file['download_url']
+                    print(f"Attempting download for file {file['id']} from: {download_url}")
+                    
+                    async with client.get(download_url) as dl:
+                        if dl.status == 200:
+                            content = await dl.read()
+                            print(f"✅ Successfully downloaded {len(content)} bytes for file {file['id']}")
+                        else:
+                            # Method 2: Try with download_access_token query parameter
+                            print(f"❌ Bearer method failed ({dl.status}), trying download_access_token method")
+                            download_url_with_token = f"{download_url}?download_access_token={zoom_token}"
+                            
+                            async with client.get(download_url_with_token) as dl2:
+                                if dl2.status == 200:
+                                    content = await dl2.read()
+                                    print(f"✅ Download_access_token method worked: {len(content)} bytes")
+                                else:
+                                    # Method 3: Try without any authentication (for public recordings)
+                                    print(f"❌ download_access_token failed ({dl2.status}), trying without auth")
+                                    async with aiohttp.ClientSession() as no_auth_client:
+                                        async with no_auth_client.get(download_url) as dl3:
+                                            if dl3.status == 200:
+                                                content = await dl3.read()
+                                                print(f"✅ No-auth method worked: {len(content)} bytes")
+                                            else:
+                                                error_text = await dl3.text()
+                                                print(f"❌ All download methods failed. Last error: {dl3.status} - {error_text}")
+                                                continue
 
-                # 6️⃣ Construct a sensible blob name
-                ext = file["file_type"].lower()         # e.g. "mp4" or "m4a"
-                blob_name = f"{session_id}/{meet.uuid}/{file['id']}.{ext}"
+                    # Create blob name and upload to Azure
+                    ext = file["file_type"].lower()
+                    blob_name = f"{session_id}/{meet.id}/{file['id']}.{ext}"
 
-                # 7️⃣ Upload to Azure Blob Storage
-                blob_client = container_client.get_blob_client(blob_name)
-                await blob_client.upload_blob(content, overwrite=True)
+                    print(f"Uploading to Azure blob: {blob_name}")
+                    
+                    blob_client = container_client.get_blob_client(blob_name)
+                    await blob_client.upload_blob(content, overwrite=True)
 
-                stored.append({
-                    "meeting_uuid": meet.uuid,
-                    "file_id": file["id"],
-                    "blob_path": blob_name
-                })
+                    stored.append({
+                        "meeting_id": meet.id,
+                        "file_id": file["id"],
+                        "blob_path": blob_name,
+                        "file_size": len(content)
+                    })
+                    
+                    print(f"Successfully stored file {file['id']} to {blob_name}")
+                    
+                except Exception as e:
+                    print(f"Error processing file {file['id']}: {str(e)}")
+                    continue
 
-    # 8️⃣ If nothing landed, it means we found no recordings
     if not stored:
         raise HTTPException(status_code=404, detail="No recordings found or uploaded")
 
     return {"stored": stored}
+
+
+@app.post("/sessions/{session_id}/download-recordings-local")
+async def download_recordings_locally(
+    session_id: str,
+    db: Session = Depends(get_db)
+):
+    sess = db.query(ClassSession).filter_by(id=session_id).first()
+    if not sess:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    # Get recordings list
+    result = await list_recordings(session_id, db)
+    recs = result.get("recordings", [])
+    if not recs:
+        raise HTTPException(status_code=404, detail="No recordings found to download")
+
+    base_dir = os.path.join(r"C:\recordings", session_id)
+    os.makedirs(base_dir, exist_ok=True)
+
+    zoom_token = await get_zoom_oauth_token()
+    saved = []
+
+    # Try multiple download methods
+    async with aiohttp.ClientSession() as client:
+        for rec in recs:
+            try:
+                download_url = rec["download_url"]
+                print(f"→ downloading file {rec['id']} from: {download_url}")
+                
+                data = None
+                
+                # Method 1: Bearer token in header
+                headers_with_auth = {"Authorization": f"Bearer {zoom_token}"}
+                async with client.get(download_url, headers=headers_with_auth, allow_redirects=True) as resp:
+                    if resp.status == 200:
+                        data = await resp.read()
+                        print(f"✅ Bearer auth worked: {len(data)} bytes")
+                    else:
+                        print(f"❌ Bearer auth failed: {resp.status}")
+                
+                # Method 2: download_access_token parameter
+                if data is None:
+                    download_url_with_token = f"{download_url}?download_access_token={zoom_token}"
+                    async with client.get(download_url_with_token, allow_redirects=True) as resp:
+                        if resp.status == 200:
+                            data = await resp.read()
+                            print(f"✅ download_access_token worked: {len(data)} bytes")
+                        else:
+                            print(f"❌ download_access_token failed: {resp.status}")
+                
+                # Method 3: No authentication (public recordings)
+                if data is None:
+                    async with aiohttp.ClientSession() as no_auth_client:
+                        async with no_auth_client.get(download_url, allow_redirects=True) as resp:
+                            if resp.status == 200:
+                                data = await resp.read()
+                                print(f"✅ No-auth worked: {len(data)} bytes")
+                            else:
+                                body = await resp.text()
+                                print(f"❌ All methods failed. Final error: {resp.status} - {body}")
+                                continue
+
+                if data is None:
+                    print(f"❌ Could not download file {rec['id']} - all methods failed")
+                    continue
+
+                # Save to local file
+                meet_dir = os.path.join(base_dir, str(rec["meeting_id"]))
+                os.makedirs(meet_dir, exist_ok=True)
+                
+                ext = rec["file_type"].lower()
+                outpath = os.path.join(meet_dir, f"{rec['id']}.{ext}")
+                
+                async with aiofiles.open(outpath, "wb") as f:
+                    await f.write(data)
+
+                print(f"✅ saved {outpath}")
+                saved.append(outpath)
+                
+            except Exception as e:
+                print(f"Error downloading file {rec['id']}: {str(e)}")
+                continue
+
+    if not saved:
+        raise HTTPException(status_code=500, detail="Downloaded 0 files")
+
+    return {"downloaded_files": saved}

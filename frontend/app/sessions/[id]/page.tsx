@@ -12,13 +12,19 @@ export default function SessionPage() {
   const { id: raw } = useParams();
   const [session, setSession] = useState<Session | null>(null);
 
+  const [loadingLocal, setLoadingLocal] = useState(false);
+  const [localStatus, setLocalStatus]   = useState<string | null>(null);
+  const [localError, setLocalError]     = useState<string | null>(null);
+
   useEffect(() => {
     if (!raw || Array.isArray(raw)) return;
-    fetchSession(raw).then(setSession).catch(console.error);
+    fetchSession(raw)
+      .then(setSession)
+      .catch(console.error);
   }, [raw]);
 
   if (!raw || Array.isArray(raw)) return <p>Invalid session ID</p>;
-  if (!session) return <p>Loading…</p>;
+  if (!session)                      return <p>Loading…</p>;
 
   const handleArchive = async () => {
     try {
@@ -31,6 +37,26 @@ export default function SessionPage() {
       alert(`Uploaded ${stored.length} recordings to Azure`);
     } catch (err: any) {
       alert(`Archive failed: ${err.message}`);
+    }
+  };
+
+  const handleDownloadLocal = async () => {
+    setLoadingLocal(true);
+    setLocalStatus(null);
+    setLocalError(null);
+
+    try {
+      const res = await fetch(
+        `${process.env.NEXT_PUBLIC_API_URL}/sessions/${session.id}/download-recordings-local`,
+        { method: 'POST' }
+      );
+      if (!res.ok) throw new Error(await res.text());
+      const json = await res.json();
+      setLocalStatus(`Saved ${json.downloaded_files.length} files on server`);
+    } catch (err: any) {
+      setLocalError(err.message);
+    } finally {
+      setLoadingLocal(false);
     }
   };
 
@@ -51,14 +77,31 @@ export default function SessionPage() {
       <MeetingList sessionId={raw} />
       <RecordingList sessionId={raw} />
 
-      {/* archive button inside its own card for contrast */}
-      <div className="w-full bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 transition">
+      {/* Archive to Azure */}
+      <div className="card mt-6">
         <button
           onClick={handleArchive}
           className="w-full bg-secondary text-white px-4 py-2 rounded hover:bg-primary transition-colors"
         >
           Archive Recordings to Azure
         </button>
+      </div>
+
+      {/* Download Locally */}
+      <div className="card mt-4">
+        <button
+          onClick={handleDownloadLocal}
+          disabled={loadingLocal}
+          className={`w-full px-4 py-2 rounded text-white transition-colors ${
+            loadingLocal
+              ? 'bg-gray-400 cursor-not-allowed'
+              : 'bg-green-600 hover:bg-green-700'
+          }`}
+        >
+          {loadingLocal ? 'Downloading…' : 'Download Recordings Locally'}
+        </button>
+        {localStatus && <p className="text-green-600 mt-2">{localStatus}</p>}
+        {localError  && <p className="text-red-600   mt-2">Error: {localError}</p>}
       </div>
     </div>
   );
