@@ -1,23 +1,23 @@
-'use client'
+"use client"
 
-import { useState, useEffect } from 'react'
-import DatePicker from 'react-datepicker'
-import 'react-datepicker/dist/react-datepicker.css'
-import { scheduleMeeting, fetchSession, Meeting } from '../lib/api'
+import { useState, useEffect } from "react"
+import DatePicker from "react-datepicker"
+import "react-datepicker/dist/react-datepicker.css"
+import { scheduleMeeting, fetchSession, Meeting } from "../lib/api"
 
 /**
  * If a meeting already exists, display its join_url and reuse it.
  * Otherwise, allow scheduling a new meeting.
  */
-export function MeetingScheduler({ sessionId }: { sessionId: string }) {
+export function MeetingScheduler({ sessionId, onScheduled }: { sessionId: string, onScheduled?: () => void }) {
   const [date, setDate] = useState<Date | null>(null)
   const [existing, setExisting] = useState<Meeting | null>(null)
   const [loading, setLoading] = useState(true)
 
-  // On mount, fetch session to see if a meeting already exists
   useEffect(() => {
     async function load() {
       const sess = await fetchSession(sessionId)
+      // normalize meetings
       if (sess.meetings && sess.meetings.length > 0) {
         setExisting(sess.meetings[0])
       }
@@ -27,14 +27,19 @@ export function MeetingScheduler({ sessionId }: { sessionId: string }) {
   }, [sessionId])
 
   const handle = async () => {
-    if (!date) return alert('Pick a date')
+    if (!date) {
+      return alert("Pick a date")
+    }
     const iso = date.toISOString()
     const meeting = await scheduleMeeting(sessionId, iso)
     setExisting(meeting)
-    alert(`Meeting created!`)
+    if (onScheduled) onScheduled();
+    alert("Meeting created!")
   }
 
-  if (loading) return <p>Loading meeting info...</p>
+  if (loading) {
+    return <p>Loading meeting info...</p>
+  }
 
   return (
     <div className="space-y-2">

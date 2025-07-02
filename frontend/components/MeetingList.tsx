@@ -4,14 +4,14 @@ import { useEffect, useState } from 'react';
 import DatePicker from 'react-datepicker';
 import 'react-datepicker/dist/react-datepicker.css';
 
-export function MeetingList({ sessionId }: { sessionId: string }) {
+export function MeetingList({ sessionId, refreshKey }: { sessionId: string, refreshKey?: number }) {
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [editing, setEditing] = useState<string | null>(null);
   const [newDate, setNewDate] = useState<Date | null>(null);
 
   useEffect(() => {
     fetchMeetings(sessionId).then(setMeetings);
-  }, [sessionId]);
+  }, [sessionId, refreshKey]);
 
   const save = async (id: string) => {
     if (!newDate) return;

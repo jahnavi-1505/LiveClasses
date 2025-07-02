@@ -16,6 +16,9 @@ export default function SessionPage() {
   const [localStatus, setLocalStatus]   = useState<string | null>(null);
   const [localError, setLocalError]     = useState<string | null>(null);
 
+  // Add a refreshKey state
+  const [refreshKey, setRefreshKey] = useState(0);
+
   useEffect(() => {
     if (!raw || Array.isArray(raw)) return;
     fetchSession(raw)
@@ -73,8 +76,10 @@ export default function SessionPage() {
         onChange={plist => setSession({ ...session, participants: plist })}
       />
 
-      <MeetingScheduler sessionId={raw} />
-      <MeetingList sessionId={raw} />
+      {/* Pass onScheduled callback to MeetingScheduler */}
+      <MeetingScheduler sessionId={raw} onScheduled={() => setRefreshKey(k => k + 1)} />
+      {/* Pass refreshKey to MeetingList */}
+      <MeetingList sessionId={raw} refreshKey={refreshKey} />
       <RecordingList sessionId={raw} />
 
       {/* Archive to Azure */}
