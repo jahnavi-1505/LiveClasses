@@ -116,3 +116,14 @@ export async function fetchRecordings(sessionId: string): Promise<Recording[]> {
   const json = await res.json();
   return json.recordings;
 }
+
+export async function fetchRecordingStreamUrls(sessionId: string): Promise<string[]> {
+  const res = await fetch(
+    `${process.env.NEXT_PUBLIC_API_URL}/sessions/${sessionId}/recordings/stream_urls`
+  );
+  if (!res.ok) {
+    throw new Error(`Error fetching stream URLs: ${await res.text()}`);
+  }
+  const { stream_urls } = await res.json();
+  return stream_urls;
+}

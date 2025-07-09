@@ -4,6 +4,7 @@ import aiofiles
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 from azure.storage.blob.aio import BlobServiceClient
+from azure.storage.blob import ContentSettings  # Added missing import
 
 from ..oauth_token import get_zoom_oauth_token
 from ..models import ClassSession
@@ -39,6 +40,10 @@ async def list_recordings(session_id: str, db: Session) -> list[dict]:
     return out
 
 async def store_recordings_to_azure(session_id: str, db: Session) -> list[dict]:
+    """
+    Download Zoom recordings and upload them to Azure Blob Storage,
+    setting the appropriate Content-Type on each blob.
+    """
     recs = await list_recordings(session_id, db)
     if not recs:
         raise HTTPException(status_code=404, detail="No recordings to upload")
@@ -79,10 +84,27 @@ async def store_recordings_to_azure(session_id: str, db: Session) -> list[dict]:
             if not content:
                 continue
 
+            # Determine MIME type from extension
             ext = rec["file_type"].lower()
+            if ext == "mp4":
+                ctype = "video/mp4"
+            elif ext in ("m4a", "mp3"):
+                ctype = "audio/mp4"
+            elif ext == "wav":
+                ctype = "audio/wav"
+            else:
+                ctype = "application/octet-stream"
+
             blob_name = f"{session_id}/{rec['meeting_id']}/{rec['id']}.{ext}"
             blob_client = container.get_blob_client(blob_name)
-            await blob_client.upload_blob(content, overwrite=True)
+
+            # Upload with proper Content-Type
+            await blob_client.upload_blob(
+                content,
+                overwrite=True,
+                content_settings=ContentSettings(content_type="video/mp4",
+                content_disposition="inline")
+            )
 
             stored.append({
                 "meeting_id": rec["meeting_id"],

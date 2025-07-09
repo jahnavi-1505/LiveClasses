@@ -24,8 +24,15 @@ def on_startup():
 async def shutdown():
     app.state.scheduler.shutdown()
 
-
+# Include routers - all without /api prefix to match your existing pattern
 app.include_router(sessions.router)
 app.include_router(participants.router)
 app.include_router(meetings.router)
 app.include_router(recordings.router)
+
+# Debug: Print all routes
+@app.on_event("startup")
+def print_routes():
+    print("Available routes:")
+    for route in app.routes:
+        print(f"  {route.methods} {route.path}")
